@@ -1,0 +1,626 @@
+@model DashboardViewModel
+@using System.Globalization
+@{
+    ViewData["Title"] = "Dashboard";
+    var apiBase = ViewData["ApiBaseUrl"]?.ToString() ?? "https://localhost:5001";
+
+    // Shape of the answer: aggregations become a big number or a bar chart above the table.
+    static bool IsNumber(string v) =>
+        double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+
+    var results       = Model.QueryResults ?? [];
+    var allColumns    = results.FirstOrDefault()?.Keys.ToList() ?? [];
+    // Numeric ids (ModelConfigurationId, …) are labels, not measures
+    var numericCols   = allColumns
+        .Where(c => !c.EndsWith("Id", StringComparison.Ordinal))
+        .Where(c => results.All(r => r.TryGetValue(c, out var v) && IsNumber(v)))
+        .ToList();
+    var labelCols     = allColumns.Except(numericCols).ToList();
+    var isAggregate   = !string.IsNullOrEmpty(Model.Apply);
+    var showBigNumber = isAggregate && results.Count == 1 && labelCols.Count == 0 && numericCols.Count > 0;
+    var showChart     = isAggregate && !showBigNumber && results.Count is > 1 and <= 40
+                        && labelCols.Count > 0 && numericCols.Count > 0;
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h1 class="h3 mb-0 fw-bold">LLM Observability Dashboard</h1>
+    <span class="badge bg-secondary">OData v4 + Claude AI</span>
+    <span class="badge bg-primary ms-1">Microsoft Foundry</span>
+</div>
+
+<!-- ── KPI cards ─────────────────────────────────────────────────────────── -->
+<div class="row g-3 mb-4" id="kpi-row">
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-primary" id="kpi-total">—</div>
+                <div class="text-muted small">Total Interactions</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-success" id="kpi-success">—</div>
+                <div class="text-muted small">Success Rate</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-warning" id="kpi-cost">—</div>
+                <div class="text-muted small">Avg Cost (USD)</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-info" id="kpi-latency">—</div>
+                <div class="text-muted small">Avg Latency (ms)</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Charts row ────────────────────────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">Success vs Failure</div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <canvas id="chart-success" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">Interactions by Model</div>
+            <div class="card-body">
+                <canvas id="chart-models" height="160"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Daily Interactions and Failures — Last 30 Days</div>
+            <div class="card-body">
+                <canvas id="chart-daily" height="90"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Natural-language query form ──────────────────────────────────────── -->
+<div class="card mb-3 shadow-sm">
+    <div class="card-header fw-semibold d-flex align-items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-chat-dots" viewBox="0 0 16 16">
+            <path d="M5 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0m4 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0m3 1a1 1 0 1 0 0-2 1 1 0 0 0 0 2"/>
+            <path d="m2.165 15.803.02-.004c1.83-.363 2.948-.842 3.468-1.105A9 9 0 0 0 8 15c4.418 0 8-3.134 8-7s-3.582-7-8-7-8 3.134-8 7c0 1.76.743 3.37 1.97 4.6a10.4 10.4 0 0 1-.524 2.318l-.003.011a11 11 0 0 1-.244.637c-.079.186.074.394.273.362a22 22 0 0 0 .693-.125m.8-3.108a1 1 0 0 0-.287-.801C1.618 10.83 1 9.468 1 8c0-3.192 3.004-6 7-6s7 2.808 7 6-3.004 6-7 6a8 8 0 0 1-2.088-.272 1 1 0 0 0-.711.074c-.387.196-1.24.57-2.634.893a11 11 0 0 0 .398-2"/>
+        </svg>
+        Ask in plain English
+        <span class="badge bg-secondary ms-1">@Model.SelectedProvider.Label · @Model.SelectedProvider.Model</span>
+    </div>
+    <div class="card-body">
+        <form asp-controller="Query" asp-action="Submit" method="post" id="nl-form">
+            <div class="mb-2 d-flex align-items-center gap-2 flex-wrap">
+                <small class="text-muted">Model:</small>
+                <div class="btn-group btn-group-sm" role="group">
+                    @foreach (var provider in Model.Providers)
+                    {
+                        var selected = provider.Id == Model.SelectedProvider.Id;
+                        <input type="radio" class="btn-check" name="provider" id="prov-@provider.Id"
+                               value="@provider.Id" autocomplete="off"
+                               checked="@selected" disabled="@(!provider.Configured)" />
+                        <label class="btn btn-outline-secondary" for="prov-@provider.Id"
+                               title="@(provider.Configured ? provider.Model : $"{provider.Label} isn't configured in the API's appsettings")">
+                            @provider.Label (@provider.Model)
+                        </label>
+                    }
+                </div>
+            </div>
+            <div class="input-group">
+                <input type="text"
+                       name="query"
+                       id="nl-input"
+                       class="form-control form-control-lg"
+                       placeholder="e.g. show me the 5 most expensive failed interactions"
+                       value="@Model.NaturalLanguageQuery"
+                       autocomplete="off"
+                       required />
+                <button class="btn btn-primary btn-lg px-4" type="submit" id="submit-btn">
+                    <span id="btn-text">Analyse</span>
+                    <span id="btn-spinner" class="spinner-border spinner-border-sm ms-1 d-none" role="status"></span>
+                </button>
+            </div>
+        </form>
+
+        @if (string.IsNullOrEmpty(Model.NaturalLanguageQuery))
+        {
+            <div class="mt-3 d-flex flex-wrap gap-2">
+                <span class="text-muted small me-1 align-self-center">Try:</span>
+                @foreach (var example in new[]
+                {
+                    "how many prompts call something the best product",
+                    "how many prompts contain exactly \"the best product\"",
+                    "how many customers asked for a refund",
+                    "feedback complaining that answers were too long",
+                    "failures per model in the last 2 weeks",
+                    "total cost per model",
+                    "which day had the most failures in the last 2 weeks",
+                    "5 most expensive failed interactions",
+                    "interactions tagged pricing"
+                })
+                {
+                    <button type="button"
+                            class="btn btn-sm btn-outline-secondary example-chip"
+                            data-query="@example">
+                        @example
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+<!-- ── Error banner ─────────────────────────────────────────────────────── -->
+@if (!string.IsNullOrEmpty(Model.ErrorMessage))
+{
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor"
+             class="bi bi-exclamation-triangle-fill flex-shrink-0 me-2" viewBox="0 0 16 16">
+            <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091
+                     1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767zM8 5c.535 0
+                     .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905
+                     0 0 1 8 5m.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2"/>
+        </svg>
+        @Model.ErrorMessage
+    </div>
+}
+
+<!-- ── Query interpretation card ────────────────────────────────────────── -->
+@if (Model.HasQueryResult || !string.IsNullOrEmpty(Model.Explanation))
+{
+    <div class="card mb-3 shadow-sm border-success">
+        <div class="card-header text-bg-success fw-semibold d-flex align-items-center justify-content-between">
+            <div class="d-flex align-items-center gap-2">
+                <span>Query Interpretation</span>
+                <span class="badge bg-dark">@Model.SelectedProvider.Label · @Model.SelectedProvider.Model</span>
+            </div>
+            @if (Model.QueryResultCount.HasValue)
+            {
+                <span class="badge bg-white text-success">@Model.QueryResultCount rows matched</span>
+            }
+        </div>
+        <div class="card-body">
+            @if (!string.IsNullOrEmpty(Model.Explanation))
+            {
+                <p class="mb-3 fst-italic text-muted">@Model.Explanation</p>
+            }
+
+            <div class="row g-2">
+                @if (!string.IsNullOrEmpty(Model.FilterExpression))
+                {
+                    <div class="col-12">
+                        <span class="badge bg-light text-dark border me-1">$filter</span>
+                        <code class="odata-expr">@Model.FilterExpression</code>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(Model.OrderBy))
+                {
+                    <div class="col-12">
+                        <span class="badge bg-light text-dark border me-1">$orderby</span>
+                        <code class="odata-expr">@Model.OrderBy</code>
+                    </div>
+                }
+                @if (Model.Top.HasValue)
+                {
+                    <div class="col-12">
+                        <span class="badge bg-light text-dark border me-1">$top</span>
+                        <code class="odata-expr">@Model.Top</code>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(Model.Expand))
+                {
+                    <div class="col-12">
+                        <span class="badge bg-light text-dark border me-1">$expand</span>
+                        <code class="odata-expr">@Model.Expand</code>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(Model.Apply))
+                {
+                    <div class="col-12">
+                        <span class="badge bg-info text-dark border me-1">$apply</span>
+                        <code class="odata-expr">@Model.Apply</code>
+                    </div>
+                }
+            </div>
+
+            @if (Model.TextSearches.Count > 0)
+            {
+                <div class="mt-3">
+                    <div class="small fw-semibold text-muted mb-1">Phrase matching</div>
+                    @foreach (var term in Model.TextSearches)
+                    {
+                        <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
+                            <span class="badge bg-light text-dark border">@term.Field</span>
+                            <code>"@term.Phrase"</code>
+                            @if (term.Exact)
+                            {
+                                <span class="badge bg-secondary" title="You asked for this exact wording">exact match</span>
+                            }
+                            else if (term.Variants.Count > 0)
+                            {
+                                <span class="badge bg-success-subtle text-success-emphasis border"
+                                      title="Also matched these wordings. Say &quot;exactly&quot; or write exact:&quot;...&quot; to turn this off.">
+                                    + synonyms
+                                </span>
+                                @foreach (var variant in term.Variants)
+                                {
+                                    <code class="text-muted">"@variant"</code>
+                                }
+                            }
+                        </div>
+                    }
+                    @if (Model.TextSearches.Any(t => !t.Exact && t.Variants.Count > 0))
+                    {
+                        <div class="form-text">
+                            Synonyms are included by default. Say "exactly" or write <code>exact:"…"</code> for a literal match.
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (!string.IsNullOrEmpty(Model.ODataUrl))
+            {
+                <div class="mt-3 p-2 bg-light rounded d-flex align-items-start gap-2">
+                    <code class="odata-url flex-grow-1 text-break" id="odata-url-text">@Model.ODataUrl</code>
+                    <button class="btn btn-sm btn-outline-secondary flex-shrink-0"
+                            id="copy-btn"
+                            title="Copy OData URL"
+                            onclick="copyODataUrl()">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16">
+                            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1z"/>
+                            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/>
+                        </svg>
+                    </button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+<!-- ── Answer: big number or chart for aggregations ──────────────────────── -->
+@if (showBigNumber)
+{
+    <div class="row g-3 mb-3">
+        @foreach (var col in numericCols)
+        {
+            <div class="col-6 col-md-3">
+                <div class="card shadow-sm text-center border-primary h-100">
+                    <div class="card-body py-3">
+                        <div class="display-5 fw-bold text-primary">@results[0][col]</div>
+                        <div class="text-muted small">@col</div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+else if (showChart)
+{
+    <div class="card mb-3 shadow-sm">
+        <div class="card-header fw-semibold d-flex align-items-center justify-content-between">
+            <span>Chart</span>
+            @if (numericCols.Count > 1)
+            {
+                <select id="result-metric" class="form-select form-select-sm w-auto">
+                    @foreach (var col in numericCols)
+                    {
+                        <option value="@col">@col</option>
+                    }
+                </select>
+            }
+        </div>
+        <div class="card-body">
+            <canvas id="chart-result" height="90"></canvas>
+        </div>
+    </div>
+}
+
+<!-- ── OData Results Explorer ────────────────────────────────────────────── -->
+@if (Model.QueryResults is { Count: > 0 })
+{
+    // Aggregations read best with the grouping columns first
+    var columns = isAggregate ? labelCols.Concat(numericCols).ToList() : allColumns;
+
+    <div class="card mb-4 shadow-sm">
+        <div class="card-header fw-semibold d-flex align-items-center justify-content-between">
+            <span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-table me-1" viewBox="0 0 16 16">
+                    <path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 2h-4v3h4zm0 4h-4v3h4zm0 4h-4v3h3a1 1 0 0 0 1-1zm-5 3v-3H6v3zm-5 0v-3H1v2a1 1 0 0 0 1 1zm-4-4h4V8H1zm0-4h4V4H1zm5-3v3h4V4zm4 4H6v3h4z"/>
+                </svg>
+                Results
+            </span>
+            <span class="text-muted small">
+                Showing @Model.QueryResults.Count of @(Model.QueryResultCount?.ToString() ?? "?") total
+            </span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-hover mb-0 results-table">
+                    <thead class="table-dark">
+                        <tr>
+                            @foreach (var col in columns)
+                            {
+                                <th>@col</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in Model.QueryResults)
+                        {
+                            <tr>
+                                @foreach (var col in columns)
+                                {
+                                    var val     = row.TryGetValue(col, out var v) ? v : "";
+                                    var display = val.Length > 80 ? val[..77] + "\u2026" : val;
+
+                                    var cellClass = "";
+                                    if (col.Equals("Success", StringComparison.OrdinalIgnoreCase))
+                                        cellClass = val == "True" ? "text-success fw-semibold" : "text-danger fw-semibold";
+                                    else if (col.Equals("ThumbsRating", StringComparison.OrdinalIgnoreCase))
+                                        cellClass = val == "1" ? "text-success" : "text-danger";
+
+                                    <td class="@cellClass" title="@val">@display</td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+else if (Model.HasQueryResult && (Model.QueryResults is null || Model.QueryResults.Count == 0))
+{
+    <div class="alert alert-info">No records matched the generated query.</div>
+}
+
+<!-- ── Live auto-tagging ─────────────────────────────────────────────────── -->
+<div class="card mb-4 shadow-sm">
+    <div class="card-header fw-semibold">Live auto-tagging</div>
+    <div class="card-body">
+        <p class="text-muted small mb-2">
+            Log a new interaction without tags. It's saved immediately, and Claude tags it in the background,
+            reusing existing tags where they fit.
+        </p>
+        <form id="tag-form" class="input-group">
+            <input type="text" id="tag-input" class="form-control" autocomplete="off" required
+                   placeholder="e.g. Can I get my money back if I downgrade mid-month?" />
+            <button class="btn btn-outline-primary" type="submit" id="tag-btn">Log interaction</button>
+        </form>
+        <div class="mt-2 small" id="tag-status"></div>
+        <div class="mt-1 d-flex flex-wrap gap-1" id="tag-result"></div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    // ── Load KPI + chart data ─────────────────────────────────────────────
+    var API_BASE = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(apiBase));
+
+    fetch(API_BASE + '/api/stats')
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+            // KPI cards
+            document.getElementById('kpi-total').textContent   = s.totalInteractions.toLocaleString();
+            document.getElementById('kpi-success').textContent = s.successRate.toFixed(1) + '%';
+            document.getElementById('kpi-cost').textContent    = '$' + s.avgCostUsd.toFixed(4);
+            document.getElementById('kpi-latency').textContent = Math.round(s.avgLatencyMs).toLocaleString();
+
+            // Donut — success vs failure
+            new Chart(document.getElementById('chart-success'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['Success', 'Failed'],
+                    datasets: [{
+                        data: [s.successCount, s.failedCount],
+                        backgroundColor: ['#198754', '#dc3545'],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    plugins: { legend: { position: 'bottom' } },
+                    cutout: '65%'
+                }
+            });
+
+            // Bar — by model
+            var modelLabels = s.byModel.map(function (m) { return m.model; });
+            var modelCounts = s.byModel.map(function (m) { return m.count; });
+            var modelColors = s.byModel.map(function (m) {
+                return m.provider === 'Anthropic' ? '#0d6efd' : '#6f42c1';
+            });
+            new Chart(document.getElementById('chart-models'), {
+                type: 'bar',
+                data: {
+                    labels: modelLabels,
+                    datasets: [{
+                        label: 'Interactions',
+                        data: modelCounts,
+                        backgroundColor: modelColors,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+                }
+            });
+
+            // Line — daily trend
+            if (s.dailyStats && s.dailyStats.length) {
+                var dates   = s.dailyStats.map(function (d) { return d.date; });
+                var counts  = s.dailyStats.map(function (d) { return d.count; });
+                var failed  = s.dailyStats.map(function (d) { return d.count - d.successCount; });
+                new Chart(document.getElementById('chart-daily'), {
+                    type: 'line',
+                    data: {
+                        labels: dates,
+                        datasets: [
+                            {
+                                label: 'Total',
+                                data: counts,
+                                borderColor: '#0d6efd',
+                                backgroundColor: 'rgba(13,110,253,0.08)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 3
+                            },
+                            {
+                                label: 'Failed',
+                                data: failed,
+                                borderColor: '#dc3545',
+                                backgroundColor: 'rgba(220,53,69,0.10)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 3
+                            }
+                        ]
+                    },
+                    options: {
+                        plugins: { legend: { position: 'top' } },
+                        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+                    }
+                });
+            }
+        })
+        .catch(function (err) {
+            console.warn('Could not load stats:', err);
+        });
+
+    // ── Loading state ─────────────────────────────────────────────────────
+    document.getElementById('nl-form').addEventListener('submit', function () {
+        document.getElementById('btn-text').textContent = 'Analysing\u2026';
+        document.getElementById('btn-spinner').classList.remove('d-none');
+        document.getElementById('submit-btn').disabled = true;
+    });
+
+    // ── Example chips ─────────────────────────────────────────────────────
+    document.querySelectorAll('.example-chip').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            document.getElementById('nl-input').value = btn.dataset.query;
+            document.getElementById('nl-form').requestSubmit();
+        });
+    });
+
+    // ── Copy OData URL ────────────────────────────────────────────────────
+    function copyODataUrl() {
+        var url = document.getElementById('odata-url-text').textContent.trim();
+        navigator.clipboard.writeText(url).then(function () {
+            var btn = document.getElementById('copy-btn');
+            btn.title = 'Copied!';
+            btn.classList.replace('btn-outline-secondary', 'btn-success');
+            setTimeout(function () {
+                btn.classList.replace('btn-success', 'btn-outline-secondary');
+                btn.title = 'Copy OData URL';
+            }, 1500);
+        });
+    }
+
+    // ── Chart for grouped results ─────────────────────────────────────────
+@if (showChart)
+{
+    <text>
+    (function () {
+        var rows      = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(results));
+        var labelCols = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(labelCols));
+        var labels    = rows.map(function (r) {
+            return labelCols.map(function (c) { return r[c] || '(none)'; }).join(' · ');
+        });
+        var chart = new Chart(document.getElementById('chart-result'), {
+            type: 'bar',
+            data: { labels: labels, datasets: [{ data: [], backgroundColor: '#0d6efd', borderRadius: 4 }] },
+            options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        });
+
+        function show(metric) {
+            chart.data.datasets[0].label = metric;
+            chart.data.datasets[0].data  = rows.map(function (r) { return parseFloat(r[metric]); });
+            chart.update();
+        }
+
+        var picker = document.getElementById('result-metric');
+        show(picker ? picker.value : @Html.Raw(System.Text.Json.JsonSerializer.Serialize(numericCols.FirstOrDefault() ?? "")));
+        if (picker) picker.addEventListener('change', function () { show(picker.value); });
+    })();
+    </text>
+}
+
+    // ── Live auto-tagging: save, then poll until the background worker adds tags ──
+    document.getElementById('tag-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var input  = document.getElementById('tag-input');
+        var button = document.getElementById('tag-btn');
+        var status = document.getElementById('tag-status');
+        var result = document.getElementById('tag-result');
+        var prompt = input.value.trim();
+        if (!prompt) return;
+
+        button.disabled = true;
+        result.innerHTML = '';
+        status.className = 'mt-2 small text-muted';
+        status.textContent = 'Saving\u2026';
+        var started = Date.now();
+
+        fetch(API_BASE + '/odata/LlmInteractions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: 'demo-presenter', sessionId: 'live-demo', userPrompt: prompt, completion: '',
+                inputTokens: Math.ceil(prompt.length / 4), outputTokens: 0, latencyMs: 0, cost: 0,
+                success: true, modelConfigurationId: 1
+            })
+        })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (saved) {
+            status.textContent = 'Saved as #' + saved.Id + ' with no tags. Claude is tagging it\u2026';
+            var attempts = 0;
+            (function poll() {
+                fetch(API_BASE + '/odata/LlmInteractions(' + saved.Id + ')')
+                    .then(function (r) { return r.json(); })
+                    .then(function (row) {
+                        if (row.Tags && row.Tags.length) {
+                            var secs = ((Date.now() - started) / 1000).toFixed(1);
+                            status.className = 'mt-2 small text-success';
+                            status.textContent = 'Interaction #' + saved.Id + ' tagged after ' + secs + 's:';
+                            row.Tags.forEach(function (t) {
+                                var badge = document.createElement('span');
+                                badge.className = 'badge bg-primary';
+                                badge.textContent = t;
+                                result.appendChild(badge);
+                            });
+                            button.disabled = false;
+                        } else if (++attempts < 20) {
+                            setTimeout(poll, 750);
+                        } else {
+                            status.className = 'mt-2 small text-warning';
+                            status.textContent = 'Saved, but no tags yet. Check the API log (is the Anthropic key set?).';
+                            button.disabled = false;
+                        }
+                    });
+            })();
+        })
+        .catch(function (err) {
+            status.className = 'mt-2 small text-danger';
+            status.textContent = 'Could not save: ' + err.message;
+            button.disabled = false;
+        });
+    });
+</script>
+}
